@@ -1,0 +1,9 @@
+Add your datasets here after extracting this project:
+
+data/
+├── AAKASH/   <- Extract/copy AAKASH dataset here
+├── ROBIN/    <- Extract/copy ROBIN dataset here
+└── CEDAR/    <- Extract/copy CEDAR dataset here
+
+Keep the original internal folder structure of each dataset.
+If your notebook expects different paths, update the dataset path variables accordingly.
