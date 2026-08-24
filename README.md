@@ -1,35 +1,46 @@
 # Offline Signature Verification using ResNet-50
 
-A metric-learning based offline handwritten signature verification project using **ResNet-50** to generate signature embeddings. The project uses a strict **writer-disjoint experimental setup** and evaluates the trained model on the **CEDAR dataset** using multiple numbers of genuine reference signatures.
+A metric-learning-based offline handwritten signature verification project using **ResNet-50** to generate signature embeddings.
 
-## Project Highlights
+The project uses a strict **writer-disjoint experimental setup** and evaluates the trained model on the **CEDAR dataset** using multiple numbers of genuine reference signatures.
 
-- ResNet-50 based signature embedding model
+---
+
+## 🚀 Project Highlights
+
+- ResNet-50-based signature embedding model
 - 256-dimensional L2-normalized embeddings
-- Metric learning using Contrastive Loss and Triplet Loss
-- Strict writer-disjoint train / validation / test split
+- Metric learning using **Contrastive Loss** and **Triplet Loss**
+- Strict **writer-disjoint** train, validation, and test split
 - 12,000 signature pairs
 - 6,000 signature triplets
-- CEDAR evaluation using 2, 3, 6, and 10 reference signatures
-- Metrics: Accuracy, Balanced Accuracy, FAR, FRR, AUC, and Threshold
+- CEDAR evaluation using **2, 3, 6, and 10 reference signatures**
+- Evaluation metrics:
+  - Accuracy
+  - Balanced Accuracy
+  - FAR
+  - FRR
+  - AUC
+  - Threshold
 - Validation-based threshold selection to avoid target-dataset threshold tuning
 
 ---
 
-# Dataset Status
+# 📂 Dataset Information
 
-The current project ZIP contains the following uploaded datasets:
+The project repository contains the following datasets:
 
 | Dataset | Status |
 |---|---|
 | AAKASH | Included |
 | CEDAR | Included |
-| ROBIN | Empty folder reserved — add dataset later |
-| RENI | Empty folder reserved — add dataset later |
+| ROBIN / RENI | Included |
+
+The dataset files are stored using **Git Large File Storage (Git LFS)**.
 
 ## Source Dataset Used for Training
 
-The experimental setup described in this project combines:
+The experimental setup combines the following source datasets:
 
 | Dataset | Writers | Images |
 |---|---:|---:|
@@ -37,13 +48,15 @@ The experimental setup described in this project combines:
 | Robin Dataset | 64 | 4,298 |
 | **Combined Dataset** | **750** | **18,924** |
 
-> **Note:** The current ZIP contains the uploaded AAKASH dataset and CEDAR dataset. Add the ROBIN and RENI dataset files into their respective folders when available.
+The combined source dataset is used for model training, validation, and testing.
+
+The **CEDAR dataset** is used for cross-dataset evaluation.
 
 ---
 
-# Strict Writer-Disjoint Split
+# 👥 Strict Writer-Disjoint Split
 
-The source dataset is split at the **writer level**, rather than randomly splitting individual images.
+The combined source dataset is split at the **writer level**, rather than randomly splitting individual signature images.
 
 | Split | Percentage | Writers |
 |---|---:|---:|
@@ -52,7 +65,7 @@ The source dataset is split at the **writer level**, rather than randomly splitt
 | Test | 10% | 75 |
 | **Total** | **100%** | **750** |
 
-The intended validation checks are:
+The implementation verifies that no writer appears in more than one split:
 
 ```python
 assert set(train_df.writer_id).isdisjoint(val_df.writer_id)
@@ -68,11 +81,11 @@ Train Writers ∩ Test Writers = ∅
 Validation Writers ∩ Test Writers = ∅
 ```
 
-This prevents writer-level data leakage and ensures unseen-writer evaluation.
+This prevents **writer-level data leakage** and ensures that validation and test writers are unseen during training.
 
 ---
 
-# Metric Learning Samples
+# 🔗 Metric Learning Samples
 
 The training configuration uses:
 
@@ -83,14 +96,22 @@ The training configuration uses:
 
 ## Pair Learning
 
-Pairs are used for contrastive learning:
+Signature pairs are used for contrastive learning:
 
-- Matching / genuine pairs → smaller embedding distance
-- Non-matching pairs → larger embedding distance
+```text
+Matching / Genuine Pair
+        ↓
+Smaller Embedding Distance
+
+
+Non-Matching Pair
+        ↓
+Larger Embedding Distance
+```
 
 ## Triplet Learning
 
-Each triplet contains:
+Each triplet consists of:
 
 ```text
 Anchor
@@ -104,7 +125,7 @@ The objective encourages:
 Distance(Anchor, Positive) < Distance(Anchor, Negative)
 ```
 
-The combined objective is:
+The combined training objective is:
 
 ```text
 Total Loss = Contrastive Loss + 0.5 × Triplet Loss
@@ -112,18 +133,45 @@ Total Loss = Contrastive Loss + 0.5 × Triplet Loss
 
 ---
 
-# CEDAR Zero-Shot Evaluation
+# 🧠 Model Architecture
 
-The trained ResNet-50 model is evaluated on the **CEDAR dataset** using:
+The system uses **ResNet-50** as the feature extraction backbone.
+
+```text
+Signature Image
+       │
+       ▼
+   ResNet-50
+       │
+       ▼
+Feature Representation
+       │
+       ▼
+256-D Embedding
+       │
+       ▼
+L2 Normalization
+       │
+       ▼
+Signature Embedding
+```
+
+Verification is performed by comparing the embedding of a query signature with embeddings from genuine reference signatures.
+
+---
+
+# 🔬 CEDAR Zero-Shot Evaluation
+
+The trained model is evaluated on the **CEDAR dataset** using different numbers of genuine reference signatures:
 
 - 2 reference signatures
 - 3 reference signatures
 - 6 reference signatures
 - 10 reference signatures
 
-For each configuration, the verification threshold is selected using validation data and then applied for CEDAR evaluation.
+For each configuration, the verification threshold is selected using validation data and then applied to the CEDAR evaluation.
 
-The reported CEDAR results are:
+## CEDAR Evaluation Results
 
 | Model | References | Accuracy | Balanced Accuracy | FAR ↓ | FRR ↓ | AUC ↑ | Threshold |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -132,104 +180,191 @@ The reported CEDAR results are:
 | ResNet-50 | **6** | **85.32%** | **83.61%** | **4.39%** | **28.38%** | **0.9360** | **0.309600** |
 | ResNet-50 | **10** | **87.42%** | **86.66%** | **10.45%** | **16.23%** | **0.9385** | **0.351160** |
 
-## Best Reported Configuration
+---
 
-**10 reference signatures**
+# 🏆 Best Reported Configuration
 
-- Accuracy: **87.42%**
-- Balanced Accuracy: **86.66%**
-- AUC: **0.9385**
-- FAR: **10.45%**
-- FRR: **16.23%**
+The highest overall performance in the CEDAR evaluation was obtained using:
+
+## 10 Reference Signatures
+
+| Metric | Result |
+|---|---:|
+| Accuracy | **87.42%** |
+| Balanced Accuracy | **86.66%** |
+| AUC | **0.9385** |
+| FAR | **10.45%** |
+| FRR | **16.23%** |
+| Threshold | **0.351160** |
 
 ---
 
-# Evaluation Metrics
+# 📊 Performance Trend
 
-### Accuracy
+Increasing the number of genuine reference signatures generally improved the overall verification performance.
+
+| References | Accuracy | Balanced Accuracy | AUC |
+|---:|---:|---:|
+| 2 | 79.76% | 79.19% | 0.9107 |
+| 3 | 81.54% | 80.53% | 0.9288 |
+| 6 | 85.32% | 83.61% | 0.9360 |
+| 10 | **87.42%** | **86.66%** | **0.9385** |
+
+---
+
+# 📏 Evaluation Metrics
+
+## Accuracy
+
 Overall percentage of correct verification decisions.
 
-### Balanced Accuracy
-Average classification performance across genuine and forged classes.
+## Balanced Accuracy
 
-### FAR — False Acceptance Rate
-Percentage of forged signatures incorrectly accepted as genuine. Lower is better.
+Average classification performance across genuine and forged signature classes.
 
-### FRR — False Rejection Rate
-Percentage of genuine signatures incorrectly rejected. Lower is better.
+## FAR — False Acceptance Rate
 
-### AUC
-Measures the ability to separate genuine and forged signatures across decision thresholds. Higher is better.
+Percentage of forged signatures incorrectly accepted as genuine.
 
-### Threshold
+**Lower is better.**
+
+## FRR — False Rejection Rate
+
+Percentage of genuine signatures incorrectly rejected.
+
+**Lower is better.**
+
+## AUC — Area Under the ROC Curve
+
+Measures how effectively the model separates genuine and forged signatures across different thresholds.
+
+**Higher is better.**
+
+## Threshold
+
 The verification decision boundary selected using validation data.
 
 ---
 
-# Experimental Pipeline
+# 🔄 Experimental Pipeline
 
 ```text
-AAKASH + ROBIN
-      │
-      ▼
-Combined Source Dataset
-750 Writers / 18,924 Images
-      │
-      ▼
-Strict Writer-Disjoint Split
-80% Train / 10% Validation / 10% Test
-      │
-      ▼
-12,000 Pairs + 6,000 Triplets
-      │
-      ▼
-ResNet-50
-      │
-      ▼
-256-D L2-Normalized Embeddings
-      │
-      ▼
-Validation Threshold Selection
-      │
-      ▼
-CEDAR Evaluation
-2 / 3 / 6 / 10 References
+        AAKASH DATASET
+        686 Writers
+       14,626 Images
+              │
+              │
+              ▼
+        ROBIN DATASET
+         64 Writers
+        4,298 Images
+              │
+              ▼
+      COMBINED SOURCE DATA
+      750 Writers / 18,924 Images
+              │
+              ▼
+      WRITER-DISJOINT SPLIT
+              │
+      ┌───────┼────────┐
+      ▼       ▼        ▼
+    TRAIN    VALID    TEST
+    80%      10%      10%
+    600       75       75
+   Writers  Writers  Writers
+              │
+              ▼
+     12,000 Signature Pairs
+              +
+      6,000 Triplets
+              │
+              ▼
+           ResNet-50
+              │
+              ▼
+      256-D L2-Normalized
+        Signature Embeddings
+              │
+              ▼
+   Validation Threshold Selection
+              │
+              ▼
+        Fixed Threshold
+              │
+              ▼
+        CEDAR Evaluation
+              │
+      ┌───────┼────────┬────────┐
+      ▼       ▼        ▼        ▼
+    2 Ref   3 Ref    6 Ref    10 Ref
+              │
+              ▼
+Accuracy / Balanced Accuracy
+FAR / FRR / AUC
 ```
 
 ---
 
-# Project Structure
+# 📁 Project Structure
 
 ```text
-ResNet50_Signature_Verification_GitHub/
+ResNet50-Signature-Verification_/
 │
 ├── ResNet50_Only_2_3_6_10Ref.ipynb
 ├── README.md
 ├── requirements.txt
 ├── .gitignore
+├── .gitattributes
 │
 └── data/
     ├── AAKASH/
+    │   └── AAKASH.zip
+    │
     ├── CEDAR/
-    ├── ROBIN/   # Add dataset here later
-    └── RENI/    # Add dataset here later
+    │   └── CEDAR.zip
+    │
+    └── ROBIN/
+        └── ROBINRENI.zip
 ```
+
+> **Note:** Large dataset files are managed using **Git LFS**.
 
 ---
 
-# Installation
+# ⚙️ Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/Tushar20250/ResNet50-Signature-Verification_.git
+```
+
+Move into the project directory:
+
+```bash
+cd ResNet50-Signature-Verification_
+```
+
+Install Git LFS and download the datasets:
+
+```bash
+git lfs install
+git lfs pull
+```
+
+Install the required Python packages:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Then open:
+Start Jupyter Notebook:
 
 ```bash
 jupyter notebook
 ```
 
-and run:
+Then open and run:
 
 ```text
 ResNet50_Only_2_3_6_10Ref.ipynb
@@ -237,8 +372,43 @@ ResNet50_Only_2_3_6_10Ref.ipynb
 
 ---
 
-# Author
+# 📝 Summary
+
+This project implements an **offline handwritten signature verification system** using **ResNet-50 and metric learning**.
+
+The experimental setup uses:
+
+```text
+750 Writers
+18,924 Signature Images
+
+12,000 Signature Pairs
+6,000 Signature Triplets
+
+Strict Writer-Disjoint Split
+80% Train / 10% Validation / 10% Test
+```
+
+The trained model is evaluated on the **CEDAR dataset** using multiple reference-signature configurations.
+
+The best reported CEDAR result is:
+
+```text
+10 Reference Signatures
+
+Accuracy:           87.42%
+Balanced Accuracy:  86.66%
+AUC:                 0.9385
+FAR:                10.45%
+FRR:                16.23%
+```
+
+---
+
+# 👨‍💻 Author
 
 **Tushar Kukreja**
+
+B.Tech Computer Science Engineering
 
 Offline Handwritten Signature Verification using ResNet-50
