@@ -1,218 +1,368 @@
+import os
+from pathlib import Path
+
+import cv2
+import numpy as np
 import streamlit as st
 import torch
 import torch.nn as nn
-from torchvision import models, transforms
+import torch.nn.functional as F
 from PIL import Image
-import os
+from torchvision import models
+
 
 # ============================================================
-# Signature Verification - Streamlit App
-# ============================================================
-# Put your trained model at:
-# Model_weights/best.pt
-#
-# IMPORTANT:
-# This file is a deployment template. If best.pt contains only
-# a state_dict from a custom Siamese architecture, the model
-# architecture must match the architecture used during training.
+# ResNet-50 Signature Verification
+# Based directly on the uploaded training/evaluation notebook.
 # ============================================================
 
 st.set_page_config(
-    page_title="Signature Verification",
+    page_title="ResNet-50 Signature Verification",
     page_icon="✍️",
-    layout="centered"
+    layout="wide",
 )
 
-st.title("✍️ Signature Verification")
-st.write("Upload a reference signature and a query signature to compare them.")
+IMAGE_SIZE = 224
+EMBED_DIM = 256
+MODEL_PATH = Path(__file__).resolve().parent / "Model_weights" / "best.pt"
 
-MODEL_PATH = os.path.join("Model_weights", "best.pt")
-
-# -----------------------------
-# Image preprocessing
-# -----------------------------
-transform = transforms.Compose([
-    transforms.Grayscale(num_output_channels=3),
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    )
-])
+# Thresholds reported by the uploaded notebook.
+# Thresholds were selected from the Akash+Robin validation protocol
+# and evaluated on CEDAR in the notebook.
+THRESHOLDS = {
+    2: 0.343098,
+    3: 0.311824,
+    6: 0.309600,
+    10: 0.351160,
+}
 
 
-@st.cache_resource
-def load_model():
-    """
-    Attempts to load a complete PyTorch model saved with torch.save(model, ...).
+# ------------------------------------------------------------
+# Exact model architecture from the notebook
+# ------------------------------------------------------------
+class ResNet50Encoder(nn.Module):
+    def __init__(self):
+        super().__init__()
 
-    If your best.pt contains a state_dict instead, this function needs to be
-    changed to recreate the exact model architecture used during training.
-    """
-    if not os.path.exists(MODEL_PATH):
-        return None, f"Model not found: {MODEL_PATH}"
+        # The checkpoint contains the trained weights, so pretrained
+        # ImageNet weights are not required at deployment time.
+        b = models.resnet50(weights=None)
 
-    try:
-        checkpoint = torch.load(
-            MODEL_PATH,
-            map_location=torch.device("cpu"),
-            weights_only=False
+        old = b.conv1
+        c = nn.Conv2d(
+            1,
+            old.out_channels,
+            old.kernel_size,
+            old.stride,
+            old.padding,
+            bias=False,
         )
 
-        # Case 1: complete nn.Module
-        if isinstance(checkpoint, nn.Module):
-            model = checkpoint
-            model.eval()
-            return model, None
+        # Same construction used in the notebook:
+        # initialize the 1-channel convolution from the RGB structure.
+        with torch.no_grad():
+            # This initialization is irrelevant after loading best.pt,
+            # but keeps the architecture identical.
+            rgb_model = models.resnet50(weights=None)
+            c.weight.copy_(rgb_model.conv1.weight.mean(1, keepdim=True))
 
-        # Case 2: checkpoint containing a complete model
-        if isinstance(checkpoint, dict) and isinstance(
-            checkpoint.get("model"), nn.Module
-        ):
-            model = checkpoint["model"]
-            model.eval()
-            return model, None
+        b.conv1 = c
+        inf = b.fc.in_features
+        b.fc = nn.Identity()
 
-        # Case 3: state_dict/checkpoint
-        if isinstance(checkpoint, dict):
-            state_dict = (
-                checkpoint.get("state_dict")
-                or checkpoint.get("model_state_dict")
-                or checkpoint.get("weights")
-            )
+        self.backbone = b
+        self.proj = nn.Sequential(
+            nn.Linear(inf, 512),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(512, EMBED_DIM),
+        )
 
-            if state_dict is not None:
-                return None, (
-                    "best.pt contains a state_dict/checkpoint rather than a "
-                    "complete PyTorch model. The exact ResNet-50/Siamese "
-                    "architecture used during training must be recreated "
-                    "before deployment."
-                )
-
-        return None, "Unsupported best.pt format."
-
-    except Exception as e:
-        return None, f"Could not load model: {e}"
+    def forward(self, x):
+        return F.normalize(self.proj(self.backbone(x)), p=2, dim=1)
 
 
-def get_embedding(model, image):
-    """Generate an embedding from a single signature image."""
-    image_tensor = transform(image).unsqueeze(0)
+# ------------------------------------------------------------
+# Exact preprocessing from the notebook
+# ------------------------------------------------------------
+def preprocess_signature(pil_image):
+    """
+    Same preprocessing logic as load_signature() + eval_tf
+    in the uploaded notebook:
 
-    with torch.no_grad():
-        output = model(image_tensor)
+      grayscale
+      Otsu threshold
+      crop to ink bounding box + 5% padding
+      resize while preserving aspect ratio
+      center on a 224x224 white canvas
+      convert white background / black ink to float tensor [0,1]
+    """
+    rgb = np.array(pil_image.convert("RGB"))
+    x = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
-    # Handle common model output formats
-    if isinstance(output, (tuple, list)):
-        output = output[0]
+    _, b = cv2.threshold(
+        x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
 
-    if isinstance(output, dict):
-        for key in ["embedding", "embeddings", "features", "output"]:
-            if key in output:
-                output = output[key]
-                break
+    ink = cv2.findNonZero(255 - b)
+
+    if ink is not None:
+        xx, yy, w, h = cv2.boundingRect(ink)
+        pad = max(3, int(0.05 * max(w, h)))
+
+        x = x[
+            max(0, yy - pad): min(x.shape[0], yy + h + pad),
+            max(0, xx - pad): min(x.shape[1], xx + w + pad),
+        ]
+
+    h, w = x.shape
+
+    scale = min(
+        IMAGE_SIZE / max(w, 1),
+        IMAGE_SIZE / max(h, 1),
+    )
+
+    nw = max(1, int(round(w * scale)))
+    nh = max(1, int(round(h * scale)))
+
+    r = cv2.resize(
+        x,
+        (nw, nh),
+        interpolation=cv2.INTER_AREA,
+    )
+
+    canvas = np.full(
+        (IMAGE_SIZE, IMAGE_SIZE),
+        255,
+        np.uint8,
+    )
+
+    y0 = (IMAGE_SIZE - nh) // 2
+    x0 = (IMAGE_SIZE - nw) // 2
+
+    canvas[
+        y0:y0 + nh,
+        x0:x0 + nw
+    ] = r
+
+    # Same representation as:
+    # (1.0-canvas.astype(np.float32)/255.0).astype(np.float32)
+    tensor = 1.0 - canvas.astype(np.float32) / 255.0
+
+    return torch.from_numpy(tensor).unsqueeze(0)
+
+
+# ------------------------------------------------------------
+# Load exact best.pt state_dict
+# ------------------------------------------------------------
+@st.cache_resource
+def load_model():
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(
+            f"Model not found at: {MODEL_PATH}"
+        )
+
+    model = ResNet50Encoder()
+
+    checkpoint = torch.load(
+        MODEL_PATH,
+        map_location="cpu",
+    )
+
+    # The notebook saves:
+    # best_state={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
+    # torch.save(best_state, outdir/"best.pt")
+    if isinstance(checkpoint, dict):
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        elif "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
         else:
-            output = next(iter(output.values()))
+            state_dict = checkpoint
+    else:
+        raise TypeError(
+            f"Unsupported checkpoint type: {type(checkpoint)}"
+        )
 
-    return output.flatten(1)
+    # Handle checkpoints saved with an optional "module." prefix.
+    cleaned_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith("module."):
+            key = key[len("module."):]
+        cleaned_state_dict[key] = value
+
+    model.load_state_dict(cleaned_state_dict, strict=True)
+    model.eval()
+
+    return model
 
 
-def cosine_similarity(a, b):
-    a = a / (a.norm(dim=1, keepdim=True) + 1e-8)
-    b = b / (b.norm(dim=1, keepdim=True) + 1e-8)
-    return torch.sum(a * b, dim=1).item()
+@torch.no_grad()
+def get_embedding(model, image):
+    x = preprocess_signature(image).unsqueeze(0)
+    return model(x).cpu()
 
 
-# -----------------------------
-# Upload section
-# -----------------------------
-col1, col2 = st.columns(2)
+@torch.no_grad()
+def verify_signatures(model, reference_images, query_image):
+    """
+    Same distance protocol as notebook:
 
-with col1:
-    st.subheader("Reference Signature")
-    reference_file = st.file_uploader(
-        "Upload reference",
-        type=["png", "jpg", "jpeg"],
-        key="reference"
+    - Generate normalized embeddings.
+    - Average the reference embeddings for the writer.
+    - Calculate Euclidean distance from query embedding to reference center.
+    """
+    reference_embeddings = torch.cat(
+        [get_embedding(model, img) for img in reference_images],
+        dim=0,
     )
 
-with col2:
-    st.subheader("Query Signature")
-    query_file = st.file_uploader(
-        "Upload query",
-        type=["png", "jpg", "jpeg"],
-        key="query"
-    )
+    query_embedding = get_embedding(model, query_image)
 
-if reference_file:
-    st.image(
-        Image.open(reference_file),
-        caption="Reference",
-        use_container_width=True
-    )
+    reference_center = reference_embeddings.mean(dim=0, keepdim=True)
+
+    distance = torch.linalg.vector_norm(
+        query_embedding - reference_center,
+        dim=1,
+    ).item()
+
+    return distance
+
+
+# ============================================================
+# UI
+# ============================================================
+
+st.title("✍️ ResNet-50 Signature Verification")
+st.write(
+    "Upload 2, 3, 6, or 10 genuine reference signatures "
+    "from the same writer and one query signature."
+)
+
+reference_count = st.selectbox(
+    "Number of reference signatures",
+    options=[2, 3, 6, 10],
+    index=0,
+)
+
+st.info(
+    f"Using the notebook's {reference_count}-reference threshold: "
+    f"{THRESHOLDS[reference_count]:.6f}"
+)
+
+reference_files = st.file_uploader(
+    f"Upload exactly {reference_count} reference signatures",
+    type=["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
+    accept_multiple_files=True,
+    key="references",
+)
+
+query_file = st.file_uploader(
+    "Upload query signature",
+    type=["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
+    accept_multiple_files=False,
+    key="query",
+)
+
+if reference_files:
+    if len(reference_files) > reference_count:
+        st.warning(
+            f"You uploaded {len(reference_files)} reference images. "
+            f"Please keep exactly {reference_count}."
+        )
+
+    cols = st.columns(min(len(reference_files), 5))
+
+    for i, file in enumerate(reference_files):
+        with cols[i % len(cols)]:
+            st.image(
+                Image.open(file),
+                caption=f"Reference {i + 1}",
+                use_container_width=True,
+            )
 
 if query_file:
     st.image(
         Image.open(query_file),
-        caption="Query",
-        use_container_width=True
+        caption="Query signature",
+        width=350,
     )
 
-# -----------------------------
-# Verification
-# -----------------------------
-if st.button("🔍 Verify Signature", use_container_width=True):
+st.divider()
 
-    if reference_file is None or query_file is None:
-        st.warning("Please upload both reference and query signatures.")
+if st.button(
+    "🔍 Verify Signature",
+    type="primary",
+    use_container_width=True,
+):
+    if len(reference_files or []) != reference_count:
+        st.error(
+            f"Please upload exactly {reference_count} reference signatures."
+        )
         st.stop()
 
-    with st.spinner("Loading model and comparing signatures..."):
-        model, error = load_model()
+    if query_file is None:
+        st.error("Please upload a query signature.")
+        st.stop()
 
-        if error:
-            st.error(error)
-            st.info(
-                "If your best.pt is a Siamese/ResNet-50 state_dict, "
-                "send me the training/model definition and I will adapt "
-                "this app to your exact checkpoint."
-            )
-            st.stop()
+    try:
+        with st.spinner("Loading ResNet-50 and comparing signatures..."):
+            model = load_model()
 
-        try:
-            reference_image = Image.open(reference_file).convert("RGB")
+            reference_images = [
+                Image.open(f).convert("RGB")
+                for f in reference_files
+            ]
+
             query_image = Image.open(query_file).convert("RGB")
 
-            reference_embedding = get_embedding(model, reference_image)
-            query_embedding = get_embedding(model, query_image)
-
-            score = cosine_similarity(
-                reference_embedding,
-                query_embedding
+            distance = verify_signatures(
+                model,
+                reference_images,
+                query_image,
             )
 
-            st.subheader("Result")
-            st.metric("Similarity Score", f"{score:.4f}")
+        threshold = THRESHOLDS[reference_count]
+        genuine = distance <= threshold
 
-            # Default demo threshold.
-            # Replace this with your validated threshold from your experiment.
-            threshold = 0.443431
+        st.subheader("Result")
 
-            st.write(f"Threshold: `{threshold:.6f}`")
+        col1, col2, col3 = st.columns(3)
 
-            if score >= threshold:
-                st.success("✅ GENUINE")
-            else:
-                st.error("❌ FORGED")
-
-        except Exception as e:
-            st.error(f"Inference error: {e}")
-            st.info(
-                "The preprocessing/model output may differ from the training "
-                "code. Use the exact preprocessing and inference architecture "
-                "from your trained ResNet-50 project."
+        with col1:
+            st.metric(
+                "Distance",
+                f"{distance:.6f}",
             )
+
+        with col2:
+            st.metric(
+                "Threshold",
+                f"{threshold:.6f}",
+            )
+
+        with col3:
+            st.metric(
+                "References",
+                str(reference_count),
+            )
+
+        if genuine:
+            st.success(
+                "✅ GENUINE — distance is at or below the threshold."
+            )
+        else:
+            st.error(
+                "❌ FORGED — distance is above the threshold."
+            )
+
+    except Exception as e:
+        st.error(f"Verification error: {e}")
+        st.exception(e)
 
 st.divider()
-st.caption("ResNet-50 Signature Verification • CPU inference")
+
+st.caption(
+    "Model: ResNet-50 encoder • Embedding dimension: 256 • "
+    "Preprocessing and distance protocol match the uploaded evaluation notebook."
+)
